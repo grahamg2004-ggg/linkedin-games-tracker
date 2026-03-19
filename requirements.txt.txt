@@ -1,5 +1,0 @@
-streamlit
-streamlit-gsheets
-easyocr
-pandas
-Pillow
