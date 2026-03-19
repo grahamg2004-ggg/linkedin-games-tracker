@@ -2,116 +2,101 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import easyocr
-from PIL import Image
 import re
 from datetime import datetime
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="LinkedIn Game Squad", layout="wide")
+# --- 1. OCR CACHING ---
+# This saves the model in memory so it doesn't download every time
+@st.cache_resource
+def load_ocr_reader():
+    # 'en' is for English. You can add others like 'es' for Spanish.
+    return easyocr.Reader(['en'], gpu=False) 
+
+reader = load_ocr_reader()
+
+# --- 2. STURDIER GOOGLE SHEETS CONNECTION ---
+def get_data():
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        # We use ttl=0 to ensure we always get the freshest scores
+        return conn.read(worksheet="Sheet1", ttl=0)
+    except Exception as e:
+        st.error("⚠️ Connection Error: Please check if the Google Sheet is 'Published to Web' and Shared as 'Editor'.")
+        return pd.DataFrame() # Returns an empty table so the app doesn't crash
+
+# --- APP CONFIG ---
+st.set_page_config(page_title="LinkedIn Games Squad", layout="wide", page_icon="🏆")
 GAMES = ["Queens", "Sudoku", "Zip", "Tango", "Patches"]
 
-# Initialize OCR (This stays in memory for speed)
-@st.cache_resource
-def load_ocr():
-    return easyocr.Reader(['en'])
-
-reader = load_ocr()
-
-# --- GOOGLE SHEETS CONNECTION ---
-# This connects to the URL you'll put in your Streamlit Secrets later
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def get_data():
-    return conn.read(worksheet="Sheet1")
-
-# --- HELPER: CONVERT TIME TO SECONDS ---
-def time_to_seconds(time_str):
-    try:
-        minutes, seconds = map(int, time_str.split(':'))
-        return (minutes * 60) + seconds
-    except:
-        return 9999 # Default high number for errors
-
-# --- APP UI ---
-st.title("🏆 LinkedIn Games: Group Leaderboard")
-st.markdown("Upload your screenshot to compete with the squad!")
-
-# Sidebar for Input
+# --- SIDEBAR: INPUT ---
 with st.sidebar:
-    st.header("Upload Result")
+    st.title("📤 Submit Score")
     player_name = st.text_input("Your Name", placeholder="e.g., Alex")
-    uploaded_file = st.file_uploader("Screenshot", type=['png', 'jpg', 'jpeg'])
-
-if uploaded_file and player_name:
-    img = Image.open(uploaded_file)
-    st.image(img, caption="Preview", width=200)
+    method = st.radio("Entry Method", ["Scan Screenshot", "Type Manually"])
     
-    if st.button("Analyze & Submit"):
-        with st.spinner("OCR Reading..."):
-            # Convert image to list of strings
-            # Change this line:
-# results = reader.readtext(uploaded_file, detail=0)
-# To this:
-            results = reader.readtext(uploaded_file.read(), detail=0)
-            full_text = " ".join(results)
-            
-            # 1. Identify Game
-            detected_game = next((g for g in GAMES if g.lower() in full_text.lower()), None)
-            
-            # 2. Identify Time (looks for 0:00 or 00:00)
-            time_match = re.search(r'(\d{1,2}:\d{2})', full_text)
-            
-            if detected_game and time_match:
-                final_time = time_match.group(1)
-                seconds = time_to_seconds(final_time)
-                
-                # Save to Google Sheets
-                new_data = pd.DataFrame([{
-                    "Date": datetime.now().strftime("%Y-%m-%d"),
-                    "Player": player_name,
-                    "Game": detected_game,
-                    "Time": final_time,
-                    "Seconds": seconds
-                }])
-                
-                existing_df = get_data()
-                updated_df = pd.concat([existing_df, new_data], ignore_index=True)
-                conn.update(worksheet="Sheet1", data=updated_df)
-                
-                st.success(f"Added {detected_game} score: {final_time}!")
-            else:
-                st.error("Could not find game name or time. Make sure the 'You Solved It' screen is visible!")
+    found_game, found_time = None, None
 
-# --- DISPLAY LEADERBOARD ---
-# --- DISPLAY LEADERBOARD ---
-st.divider()
+    if method == "Scan Screenshot":
+        uploaded_file = st.file_uploader("Upload Game Result", type=['png', 'jpg', 'jpeg'])
+        if uploaded_file and st.button("🔍 Analyze Image"):
+            with st.spinner("OCR engine reading pixels..."):
+                # .read() is required to pass bytes to EasyOCR
+                img_bytes = uploaded_file.read()
+                results = reader.readtext(img_bytes, detail=0)
+                full_text = " ".join(results)
+                
+                # Logic to find Game and Time
+                found_game = next((g for g in GAMES if g.lower() in full_text.lower()), None)
+                time_match = re.search(r'(\d{1,2}:\d{2})', full_text)
+                if time_match: found_time = time_match.group(1)
+                
+                if found_game and found_time:
+                    st.success(f"Detected {found_game} in {found_time}!")
+                else:
+                    st.warning("OCR couldn't find the game/time. Try 'Manual Entry'.")
+    else:
+        found_game = st.selectbox("Select Game", GAMES)
+        found_time = st.text_input("Time (m:ss)", placeholder="1:24")
+
+    if st.button("🚀 Post to Leaderboard"):
+        if player_name and found_game and found_time:
+            # Logic for conversion to seconds for sorting
+            def to_sec(ts):
+                try:
+                    m, s = map(int, ts.split(':'))
+                    return m * 60 + s
+                except: return 9999
+            
+            new_entry = pd.DataFrame([{
+                "Date": datetime.now().strftime("%Y-%m-%d"),
+                "Player": player_name, "Game": found_game,
+                "Time": found_time, "Seconds": to_sec(found_time)
+            }])
+            
+            try:
+                conn = st.connection("gsheets", type=GSheetsConnection)
+                existing_data = get_data()
+                updated_df = pd.concat([existing_data, new_entry], ignore_index=True)
+                conn.update(worksheet="Sheet1", data=updated_df)
+                st.balloons()
+                st.success("Leaderboard Updated!")
+            except:
+                st.error("Failed to save. Check Google Sheet 'Editor' permissions.")
+
+# --- MAIN PAGE ---
+st.title("🥇 Squad Leaderboard")
 all_scores = get_data()
 
 if not all_scores.empty:
-    selected_game = st.selectbox("View Leaderboard For:", GAMES)
-    
-    # Filter and Sort
-    game_df = all_scores[all_scores['Game'] == selected_game].copy()
-    
-    if not game_df.empty:
-        # Sort by Seconds (Fastest first)
-        game_df = game_df.sort_values(by="Seconds", ascending=True).reset_index(drop=True)
-        
-        # Add Medal column
-        def assign_medal(index):
-            if index == 0: return "🥇"
-            if index == 1: return "🥈"
-            if index == 2: return "🥉"
-            return str(index + 1)
-
-        game_df['Rank'] = [assign_medal(i) for i in range(len(game_df))]
-        
-        st.subheader(f"Rankings for {selected_game}")
-        # Show specific columns to the user
-        st.dataframe(
-            game_df[['Rank', 'Player', 'Time', 'Date']], 
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info(f"No scores yet for {selected_game}. Be the first to upload!")
+    tabs = st.tabs(GAMES)
+    for i, game in enumerate(GAMES):
+        with tabs[i]:
+            df = all_scores[all_scores['Game'] == game].copy()
+            if not df.empty:
+                df = df.sort_values(by="Seconds").reset_index(drop=True)
+                df['Rank'] = [("🥇" if x==0 else "🥈" if x==1 else "🥉" if x==2 else str(x+1)) for x in range(len(df))]
+                st.table(df[['Rank', 'Player', 'Time', 'Date']])
+            else:
+                st.info(f"No scores for {game} yet.")
+else:
+    st.info("The leaderboard is currently empty.")
