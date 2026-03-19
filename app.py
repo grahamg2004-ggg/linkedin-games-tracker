@@ -49,7 +49,10 @@ if uploaded_file and player_name:
     if st.button("Analyze & Submit"):
         with st.spinner("OCR Reading..."):
             # Convert image to list of strings
-            results = reader.readtext(uploaded_file, detail=0)
+            # Change this line:
+# results = reader.readtext(uploaded_file, detail=0)
+# To this:
+            results = reader.readtext(uploaded_file.read(), detail=0)
             full_text = " ".join(results)
             
             # 1. Identify Game
