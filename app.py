@@ -80,6 +80,7 @@ if uploaded_file and player_name:
                 st.error("Could not find game name or time. Make sure the 'You Solved It' screen is visible!")
 
 # --- DISPLAY LEADERBOARD ---
+# --- DISPLAY LEADERBOARD ---
 st.divider()
 all_scores = get_data()
 
@@ -87,15 +88,27 @@ if not all_scores.empty:
     selected_game = st.selectbox("View Leaderboard For:", GAMES)
     
     # Filter and Sort
-    game_df = all_scores[all_scores['Game'] == selected_game]
-    game_df = game_df.sort_values(by="Seconds", ascending=True)
+    game_df = all_scores[all_scores['Game'] == selected_game].copy()
     
-    # Display top 3 with medals
-    st.subheader(f"Rankings for {selected_game}")
     if not game_df.empty:
-        # Simple table display
-        st.table(game_df[['Player', 'Time', 'Date']])
+        # Sort by Seconds (Fastest first)
+        game_df = game_df.sort_values(by="Seconds", ascending=True).reset_index(drop=True)
+        
+        # Add Medal column
+        def assign_medal(index):
+            if index == 0: return "🥇"
+            if index == 1: return "🥈"
+            if index == 2: return "🥉"
+            return str(index + 1)
+
+        game_df['Rank'] = [assign_medal(i) for i in range(len(game_df))]
+        
+        st.subheader(f"Rankings for {selected_game}")
+        # Show specific columns to the user
+        st.dataframe(
+            game_df[['Rank', 'Player', 'Time', 'Date']], 
+            use_container_width=True,
+            hide_index=True
+        )
     else:
-        st.info("No scores yet for this game.")
-else:
-    st.info("The leaderboard is currently empty. Be the first to upload!")
+        st.info(f"No scores yet for {selected_game}. Be the first to upload!")
